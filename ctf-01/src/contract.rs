@@ -77,9 +77,12 @@ pub fn withdraw(
 ) -> Result<Response, ContractError> {
     let mut lockups: Vec<Lockup> = vec![];
     let mut total_amount = Uint128::zero();
+    let mut ids = ids;
+    ids.sort();
+    ids.dedup();
 
     // fetch vaults to process
-    for lockup_id in ids.clone() {
+    for lockup_id in ids.clone().into_iter() {
         let lockup = LOCKUPS.load(deps.storage, lockup_id).unwrap();
         lockups.push(lockup);
     }
