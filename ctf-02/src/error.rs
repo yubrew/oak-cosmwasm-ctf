@@ -8,4 +8,10 @@ pub enum ContractError {
 
     #[error("Unauthorized")]
     Unauthorized {},
+
+    #[error("UnderflowError")]
+    UnderflowError {},
+
+    #[error("OverflowError")]
+    OverflowError {},
 }

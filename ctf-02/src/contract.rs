@@ -67,7 +67,10 @@ pub fn withdraw(
     // decrease total stake
     let mut user = VOTING_POWER.load(deps.storage, &info.sender).unwrap();
 
-    user.total_tokens -= amount;
+    user.total_tokens = user
+        .total_tokens
+        .checked_sub(amount)
+        .map_err(|_| ContractError::UnderflowError {})?;
 
     // cannot withdraw staked tokens
     if user.total_tokens.u128() < user.voting_power {
@@ -107,6 +110,11 @@ pub fn stake(
         return Err(ContractError::Unauthorized {});
     }
 
+    user.total_tokens = user
+        .total_tokens
+        .checked_sub(Uint128::from(lock_amount))
+        .map_err(|_| ContractError::UnderflowError {})?;
+
     user.released_time = env.block.time.plus_seconds(LOCK_PERIOD);
 
     VOTING_POWER
@@ -135,6 +143,10 @@ pub fn unstake(
     }
 
     user.voting_power -= unlock_amount;
+    user.total_tokens = user
+        .total_tokens
+        .checked_add(Uint128::from(unlock_amount))
+        .map_err(|_| ContractError::OverflowError {})?;
 
     VOTING_POWER
         .save(deps.storage, &info.sender, &user)
