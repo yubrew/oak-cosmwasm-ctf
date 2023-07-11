@@ -18,6 +18,7 @@ pub mod tests {
     }
 
     pub const USER: &str = "user";
+    pub const HACKER: &str = "hacker";
     pub const ADMIN: &str = "admin";
 
     pub fn proper_instantiate() -> (App, Addr) {
@@ -103,6 +104,50 @@ pub mod tests {
 
         // verify funds received
         let balance = app.wrap().query_balance(USER, DENOM).unwrap().amount;
+        assert_eq!(balance, MINIMUM_DEPOSIT_AMOUNT);
+    }
+
+    #[test]
+    fn test_withdraw_accounting() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        let hacker = Addr::unchecked(HACKER.to_string());
+
+        // mint funds to hacker
+        app = mint_tokens(app, hacker.to_string(), MINIMUM_DEPOSIT_AMOUNT);
+
+        // deposit
+        let msg = ExecuteMsg::Deposit {};
+        app.execute_contract(
+            hacker.clone(),
+            contract_addr.clone(),
+            &msg,
+            &[coin(MINIMUM_DEPOSIT_AMOUNT.u128(), DENOM)],
+        )
+        .unwrap();
+
+        let msg = QueryMsg::GetLockup { id: 2 };
+        let lockup: Lockup = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &msg)
+            .unwrap();
+        assert_eq!(lockup.amount, MINIMUM_DEPOSIT_AMOUNT);
+        assert_eq!(lockup.owner, hacker);
+
+        // fast forward to LOCK_PERIOD
+        app.update_block(|block| {
+            block.time = block.time.plus_seconds(LOCK_PERIOD);
+        });
+
+        // "hacker" tries to drain contract
+        let msg = ExecuteMsg::Withdraw {
+            ids: vec![2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+        };
+        let res = app.execute_contract(hacker.clone(), contract_addr.clone(), &msg, &[]);
+        assert!(res.is_ok());
+
+        // verify funds received should match deposit amount
+        let balance = app.wrap().query_balance(hacker, DENOM).unwrap().amount;
         assert_eq!(balance, MINIMUM_DEPOSIT_AMOUNT);
     }
 }
