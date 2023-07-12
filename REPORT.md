@@ -150,24 +150,12 @@ pub fn unstake(deps: DepsMut,
 fn test_withdraw_accounting() {
     let (mut app, contract_addr) = proper_instantiate();
 
-    let amount = Uint128::new(1_000);
+    let amount = Uint128::new(50);
 
-    app = mint_tokens(app, USER.to_string(), amount);
     app = mint_tokens(app, HACKER.to_string(), amount);
-    let sender = Addr::unchecked(USER);
     let hacker = Addr::unchecked(HACKER);
 
-    // deposit funds for user
-    let msg = ExecuteMsg::Deposit {};
-    app.execute_contract(
-        sender.clone(),
-        contract_addr.clone(),
-        &msg,
-        &[coin(amount.u128(), DENOM)],
-    )
-    .unwrap();
-
-    // deposit funds for hacker
+    // deposit 50 funds for hacker
     let msg = ExecuteMsg::Deposit {};
     app.execute_contract(
         hacker.clone(),
@@ -177,46 +165,36 @@ fn test_withdraw_accounting() {
     )
     .unwrap();
 
-    // The hacker stakes 70 tokens
-    let res = app.execute_contract(
+    // The hacker stakes 50 tokens
+    app.execute_contract(
         hacker.clone(),
         contract_addr.clone(),
-        &ExecuteMsg::Stake { lock_amount: 70 },
+        &ExecuteMsg::Stake { lock_amount: 50 },
         &[],
-    );
-    assert!(res.is_ok());
+    )
+    .unwrap();
 
-    // fast forward time
-    app.update_block(|block| {
-        block.time = block.time.plus_seconds(LOCK_PERIOD);
-    });
-
-    // The hacker unstakes 50 tokens
-    let res = app.execute_contract(
-        hacker.clone(),
-        contract_addr.clone(),
-        &ExecuteMsg::Unstake { unlock_amount: 50 },
-        &[],
-    );
-    assert!(res.is_ok());
-
-    // The user withdraws 90 tokens
-    let res = app.execute_contract(
+    // The hacker tries to withdraw 50 tokens unsuccessfully
+    app.execute_contract(
         hacker.clone(),
         contract_addr.clone(),
         &ExecuteMsg::Withdraw {
-            amount: Uint128::from(90u128),
+            amount: Uint128::from(50u128),
         },
         &[],
-    );
-    assert!(res.is_ok());
+    )
+    .unwrap_err();
 
-    // funds are received
-    let balance = app.wrap().query_balance(hacker, DENOM).unwrap().amount;
-    assert_eq!(balance, Uint128::from(90u128));
+    // funds are not received
+    let balance = app
+        .wrap()
+        .query_balance(hacker.clone(), DENOM)
+        .unwrap()
+        .amount;
+    assert_eq!(balance, Uint128::from(0u128));
 
     // query user for voting power
-    // should be 10 tokens, not 20 tokens
+    // should be 50 tokens
     let msg = QueryMsg::GetVotingPower {
         user: (&HACKER).to_string(),
     };
@@ -224,7 +202,49 @@ fn test_withdraw_accounting() {
         .wrap()
         .query_wasm_smart(contract_addr.clone(), &msg)
         .unwrap();
-    assert_eq!(voting_power, 10_u128);
+    assert_eq!(voting_power, 50_u128);
+
+    // fast forward time
+    app.update_block(|block| {
+        block.time = block.time.plus_seconds(LOCK_PERIOD);
+    });
+
+    // The hacker unstakes 50 tokens
+    app.execute_contract(
+        hacker.clone(),
+        contract_addr.clone(),
+        &ExecuteMsg::Unstake {
+            unlock_amount: 50u128,
+        },
+        &[],
+    )
+    .unwrap();
+
+    // The hacker withdraws 50 tokens
+    app.execute_contract(
+        hacker.clone(),
+        contract_addr.clone(),
+        &ExecuteMsg::Withdraw {
+            amount: Uint128::from(50u128),
+        },
+        &[],
+    )
+    .unwrap();
+
+    // funds are received
+    let balance = app.wrap().query_balance(hacker, DENOM).unwrap().amount;
+    assert_eq!(balance, Uint128::from(50u128));
+
+    // query user for voting power
+    // should be 0 tokens
+    let msg = QueryMsg::GetVotingPower {
+        user: (&HACKER).to_string(),
+    };
+    let voting_power: u128 = app
+        .wrap()
+        .query_wasm_smart(contract_addr.clone(), &msg)
+        .unwrap();
+    assert_eq!(voting_power, 0_u128);
 }
 ```
 

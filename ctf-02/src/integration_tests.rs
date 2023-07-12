@@ -239,12 +239,12 @@ pub mod tests {
     fn test_withdraw_accounting() {
         let (mut app, contract_addr) = proper_instantiate();
 
-        let amount = Uint128::new(1_000);
+        let amount = Uint128::new(50);
 
         app = mint_tokens(app, HACKER.to_string(), amount);
         let hacker = Addr::unchecked(HACKER);
 
-        // deposit funds for hacker
+        // deposit 50 funds for hacker
         let msg = ExecuteMsg::Deposit {};
         app.execute_contract(
             hacker.clone(),
@@ -259,6 +259,52 @@ pub mod tests {
             hacker.clone(),
             contract_addr.clone(),
             &ExecuteMsg::Stake { lock_amount: 50 },
+            &[],
+        )
+        .unwrap();
+
+        // The hacker tries to withdraw 50 tokens unsuccessfully
+        app.execute_contract(
+            hacker.clone(),
+            contract_addr.clone(),
+            &ExecuteMsg::Withdraw {
+                amount: Uint128::from(50u128),
+            },
+            &[],
+        )
+        .unwrap_err();
+
+        // funds are not received
+        let balance = app
+            .wrap()
+            .query_balance(hacker.clone(), DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::from(0u128));
+
+        // query user for voting power
+        // should be 50 tokens
+        let msg = QueryMsg::GetVotingPower {
+            user: (&HACKER).to_string(),
+        };
+        let voting_power: u128 = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &msg)
+            .unwrap();
+        assert_eq!(voting_power, 50_u128);
+
+        // fast forward time
+        app.update_block(|block| {
+            block.time = block.time.plus_seconds(LOCK_PERIOD);
+        });
+
+        // The hacker unstakes 50 tokens
+        app.execute_contract(
+            hacker.clone(),
+            contract_addr.clone(),
+            &ExecuteMsg::Unstake {
+                unlock_amount: 50u128,
+            },
             &[],
         )
         .unwrap();
