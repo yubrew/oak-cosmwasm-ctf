@@ -592,17 +592,55 @@ In this example, the malicious contract continually attempts to withdraw the spe
 
 ### Description
 
-The bug occurs in ...
+The vulnerability lies in the exec_accept_trade function. The function first retrieves the trade from the `TRADES` storage, and then retrieves the corresponding sale from the `SALES` storage. However, there is no check in place to ensure that the NFT being traded is actually the NFT listed in the sale.
+
+An attacker could create a trade, offering an NFT they own and specifying a high-value NFT as the one they're asking for. Then, they could trick the owner of the high-value NFT into accepting the trade by making it appear as though they are offering a high-value NFT in return. The owner of the high-value NFT would be expecting to receive a high-value NFT in return, but because the `exec_accept_trade` function does not verify that the NFT being offered is the one listed in the sale, the attacker could instead send a low-value NFT.
 
 ### Recommendation
 
-The fix should be ...
+To prevent this, the `exec_accept_trade` function should verify that the NFT being offered in the trade is the same as the one listed in the sale. Here's how the `exec_accept_trade` function might be updated to fix this vulnerability:
+
+```rust
+pub fn exec_accept_trade(deps: DepsMut, info: MessageInfo, asked_id: String, trader: String,) -> Result<Response, ContractError> {
+    let trade = TRADES.load(deps.storage, (asked_id.clone(), trader))?;
+    let sale = SALES.load(deps.storage, asked_id)?;
+
+    // Verify that the NFT being offered is the one listed in the sale
+    if trade.to_trade_id != sale.nft_id {
+        return Err(ContractError::IncorrectNFT);
+    }
+
+    // ... rest of function ...
+}
+```
+
+With this update, the contract will reject trades where the NFT being offered is not the one listed in the sale, preventing this kind of exploit.
 
 ### Proof of concept
 
+Here is an example of how a malicious contract might exploit this vulnerability:
+
 ```rust
-// code goes here
+// Contract that exploits the trading vulnerability
+# [cfg_attr (not (feature = "library"), entry_point)]
+pub fn execute(deps: DepsMut, _env: Env, _info: MessageInfo, msg: ExecuteMsg,) -> Result<Response, ContractError> {
+    match msg {
+        ExecuteMsg::ExploitTrade { high_value_nft_id, low_value_nft_id } => {
+            let trade_msg = ExecuteMsg::NewTrade {
+                target: high_value_nft_id,
+                offered: low_value_nft_id
+            };
+            let result = deps.api.execute_contract(&trade_msg);
+            if result.is_err() {
+                return Err(ContractError::FailedTrade);
+            }
+            Ok(Response::new().add_attribute("action", "trade exploit"))
+        }
+    }
+}
 ```
+
+In this example, the malicious contract creates a new trade, offering a low-value NFT and asking for a high-value NFT.
 
 ---
 
