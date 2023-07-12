@@ -217,7 +217,7 @@ Given the nature of the vulnerability, where a flash loan can be exploited by se
 
 ### Proof of concept
 
-````rust
+```rust
 // add to proxy integration tests
 #[test]
 fn settle_loan_vulnerability() {
@@ -273,17 +273,47 @@ let hacker = Addr::unchecked(HACKER.to_string());
 
 ### Description
 
-The bug occurs in ...
+There is a vulnerability in the mint function. The vulnerability is related to how the `mint_amount` is calculated. This issue could potentially allow a user to withdraw more funds than they deposited.
+
+`let total_assets = contract_balance.amount - amount;`
+
+Let's consider the following steps:
+
+1. User A deposits 1 `uawesome` token.
+   The mint function will be called. Since the total_supply is zero, `mint_amount` is equal to the amount, which is 1. The `total_supply` is then updated to 1, and user A's balance is updated to 1.
+
+2. User B deposits 100 `uawesome` tokens.
+   When the mint function is called, `mint_amount` is calculated as `amount.multiply_ratio(total_supply, total_assets)`, which is `100.multiply_ratio(1, 1) = 100`. So the `total_supply` becomes 101, and user B's balance is updated to 100.
+
+3. User A withdraws their funds.
+   When user A calls the burn function, the `asset_to_return` is calculated as `shares.multiply_ratio(total_assets, total_supply)`, which is 1.`multiply_ratio(101, 101) = 1`.
+
+4. User B withdraws their funds.
+   When user B calls the burn function, the `asset_to_return` is calculated as `shares.multiply_ratio(total_assets, total_supply)`, which is 100.`multiply_ratio(1, 101)`. Here's the problem: despite depositing 100 tokens, user B can only withdraw approximately 0.99 tokens, losing a significant portion of their deposit.
+
+The vulnerability lies in the line where total_assets is calculated in the mint function:
+
+```rust
+let total_assets = contract_balance.amount - amount;
+```
+
+Here, `total_assets` is assigned the value of the contract's balance after the deposit, which doesn't reflect the actual total assets in the contract. This discrepancy in the calculation of `total_assets` affects the calculation of `mint_amount` and `asset_to_return`, leading to the problem described above.
 
 ### Recommendation
 
-The fix should be ...
+To fix this vulnerability, we should calculate total_assets before the new deposit is added:
+
+```rust
+let total_assets = contract_balance.amount;
+```
+
+This will ensure that the `total_assets` variable correctly reflects the total assets in the contract when calculating the `mint_amount` and `asset_to_return`.
 
 ### Proof of concept
 
 ```rust
 // code goes here
-````
+```
 
 ---
 
