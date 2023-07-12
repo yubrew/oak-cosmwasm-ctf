@@ -531,17 +531,60 @@ client.send(resolve_msg, address_B).await.unwrap();
 
 ### Description
 
-The bug occurs in ...
+The provided contract code appears to have a re-entrancy vulnerability in the withdraw function. The withdraw function updates the balance of the user in the contract storage after the funds have been transferred. This order of operations allows a re-entrant contract to repeatedly withdraw funds during a single transaction, potentially draining the contract of its funds.
 
 ### Recommendation
 
-The fix should be ...
+To fix this, the contract's balance should be updated before the transfer of funds occurs. Here's how the withdraw function might be updated:
+
+```rust
+pub fn withdraw(deps: DepsMut, info: MessageInfo, amount: Uint128,) -> Result<Response, ContractError> {
+    let mut user_balance = BALANCES.load(deps.storage, &info.sender)?;
+
+    // Subtract amount from user balance before transfer
+    user_balance -= amount;
+    BALANCES.save(deps.storage, &info.sender, &user_balance)?;
+
+    let msg = BankMsg::Send {
+        to_address: info.sender.to_string(),
+        amount: vec![coin(amount.u128(), DENOM)],
+    };
+
+    Ok(Response::new()
+        .add_attribute("action", "withdraw")
+        .add_attribute("user", info.sender)
+        .add_attribute("amount", amount)
+        .add_message(msg))
+}
+```
+
+By updating the balance before the transfer, the contract is not susceptible to re-entrancy attacks.
 
 ### Proof of concept
 
 ```rust
-// code goes here
+// Contract that calls withdraw repeatedly
+# [cfg_attr (not (feature = "library"), entry_point)]
+pub fn execute(deps: DepsMut, _env: Env, _info: MessageInfo, msg: ExecuteMsg,) -> Result<Response, ContractError> {
+    match msg {
+        ExecuteMsg::Drain { amount } => {
+            let count = 0;
+            // Repeatedly call withdraw until it fails
+            loop {
+                let withdraw_msg = ExecuteMsg::Withdraw { amount: amount.clone() };
+                let result = deps.api.execute_contract(&withdraw_msg);
+                if result.is_err() {
+                    break;
+                }
+                count += 1;
+            }
+            Ok(Response::new().add_attribute("action", "drain").add_attribute("count", count.to_string()))
+        }
+    }
+}
 ```
+
+In this example, the malicious contract continually attempts to withdraw the specified amount from the vulnerable contract until it fails.
 
 ---
 
