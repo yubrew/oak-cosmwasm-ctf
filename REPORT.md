@@ -1,4 +1,4 @@
-# Sample Report Template
+# Report for Oak CTF contest for AwesomeWasm 2023
 
 ## Challenge 01: _Mjolnir_
 
