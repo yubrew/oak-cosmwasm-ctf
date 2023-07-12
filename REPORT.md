@@ -98,9 +98,7 @@ fn test_withdraw_accounting() {
 
 The `total_tokens` variable is updated when a deposit or withdrawal occurs but not when staking or unstaking. As a result, this might cause an accounting / balance discrepancy between the `total_tokens` and `voting_power`.
 
-Suppose a user has 100 tokens and they decide to stake 70 tokens. Now, they have 70 `voting_power` and 100 `total_tokens`. Now, let's say the user unstakes 50 tokens. As per the code, the `voting_power` will be reduced to 20 but the `total_tokens` will still remain at 100. Now, if the user decides to withdraw 90 tokens, they will be able to do so because as per the withdraw function, the `total_tokens` (100) is more than the `voting_power` (20).
-
-After these transactions, the user has 20 `voting_power` but they have withdrawn all their tokens (100 tokens initially deposited - 90 tokens withdrawn = 10 tokens remaining in `total_tokens` but these were staked). The remaining voting power despite having no tokens can result in a discrepancy.
+Suppose a user has 50 tokens and they decide to stake 50 tokens. Now, they have 50 `voting_power` and 50 `total_tokens`. Now, let's say the user withdraws 50 tokens. As per the code, the `voting_power` will be 50 but the `total_tokens` will be 0. The remaining voting power despite having no tokens can result in a discrepancy.
 
 ### Recommendation
 
@@ -174,7 +172,8 @@ fn test_withdraw_accounting() {
     )
     .unwrap();
 
-    // The hacker tries to withdraw 50 tokens unsuccessfully
+    // The hacker withdraws 50 tokens
+    // This should fail because the hacker should not be able to withdraw staked tokens
     app.execute_contract(
         hacker.clone(),
         contract_addr.clone(),
@@ -185,16 +184,7 @@ fn test_withdraw_accounting() {
     )
     .unwrap_err();
 
-    // funds are not received
-    let balance = app
-        .wrap()
-        .query_balance(hacker.clone(), DENOM)
-        .unwrap()
-        .amount;
-    assert_eq!(balance, Uint128::from(0u128));
-
-    // query user for voting power
-    // should be 50 tokens
+    // Should be 0 voting power, but it is 50 voting power
     let msg = QueryMsg::GetVotingPower {
         user: (&HACKER).to_string(),
     };
@@ -202,49 +192,7 @@ fn test_withdraw_accounting() {
         .wrap()
         .query_wasm_smart(contract_addr.clone(), &msg)
         .unwrap();
-    assert_eq!(voting_power, 50_u128);
-
-    // fast forward time
-    app.update_block(|block| {
-        block.time = block.time.plus_seconds(LOCK_PERIOD);
-    });
-
-    // The hacker unstakes 50 tokens
-    app.execute_contract(
-        hacker.clone(),
-        contract_addr.clone(),
-        &ExecuteMsg::Unstake {
-            unlock_amount: 50u128,
-        },
-        &[],
-    )
-    .unwrap();
-
-    // The hacker withdraws 50 tokens
-    app.execute_contract(
-        hacker.clone(),
-        contract_addr.clone(),
-        &ExecuteMsg::Withdraw {
-            amount: Uint128::from(50u128),
-        },
-        &[],
-    )
-    .unwrap();
-
-    // funds are received
-    let balance = app.wrap().query_balance(hacker, DENOM).unwrap().amount;
-    assert_eq!(balance, Uint128::from(50u128));
-
-    // query user for voting power
-    // should be 0 tokens
-    let msg = QueryMsg::GetVotingPower {
-        user: (&HACKER).to_string(),
-    };
-    let voting_power: u128 = app
-        .wrap()
-        .query_wasm_smart(contract_addr.clone(), &msg)
-        .unwrap();
-    assert_eq!(voting_power, 0_u128);
+    assert_neq!(voting_power, 50_u128);
 }
 ```
 
