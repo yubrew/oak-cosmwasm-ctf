@@ -125,4 +125,79 @@ pub mod tests {
             .unwrap();
         assert_eq!(bal.amount, Uint128::zero());
     }
+
+    #[test]
+    fn test_imbalance() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // User A deposits 10000 uawesome, since the total supply is 0, they receive 10000 shares.
+        // mint funds to user
+        app = mint_tokens(app, USER.to_owned(), Uint128::new(10_000));
+
+        // mint shares for user
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Mint {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // User A burns all their shares and withdraws 10000 uawesome.
+        // Now the total supply is 0 but the contract still has 10000 uawesome left because of the burning process.
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Burn {
+                shares: Uint128::new(10_000),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // User B deposits 1 uawesome, they should receive 1 share, but due to the current implementation of the mint method, they receive 10001 shares because the minting ratio is calculated based on the total assets left by user A (10000 uawesome) and the current deposit (1 uawesome).
+        // mint funds to user2
+        app = mint_tokens(app, USER2.to_owned(), Uint128::new(1));
+
+        // mint shares for user2
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Mint {},
+            &[coin(1, DENOM)],
+        )
+        .unwrap();
+
+        // burn shares for user2
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Burn {
+                shares: Uint128::new(1),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // query user2
+        let balance: Balance = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::UserBalance {
+                    address: USER2.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(balance.amount, Uint128::new(0));
+
+        let bal = app.wrap().query_balance(USER2, DENOM).unwrap();
+        assert_eq!(bal.amount, Uint128::new(1));
+
+        let bal = app
+            .wrap()
+            .query_balance(contract_addr.to_string(), DENOM)
+            .unwrap();
+        assert_eq!(bal.amount, Uint128::zero());
+    }
 }
