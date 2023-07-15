@@ -319,7 +319,168 @@ This will ensure that the `total_assets` variable correctly reflects the total a
 
 ## Challenge 05: _Draupnir_
 
-### Description
+The contract does have a critical flaw in the `OwnerAction` function which allows the contract owner to execute arbitrary Cosmos messages, potentially manipulating the contract's state or performing malicious actions in the context of the contract.
+
+Here's how the owner can drain all the funds:
+
+The contract owner waits for users to deposit a significant amount of `uawesome` tokens into the contract.
+The owner uses the `OwnerAction` function to send a `BankMsg::Send` message, transferring all the contract's balance to their own account or another account of their choice.
+This action is not technically a vulnerability, since it's a feature of the contract that's available only to the owner. However, it's a risky design that could lead to misuse or abuse of the contract's funds. It's generally considered bad practice to include such powerful capabilities in a smart contract without additional safeguards or restrictions.
+
+To mitigate this risk, consider restricting the types of messages that the owner can send or implementing additional checks and balances on the owner's actions. For example, you could require a certain period of time to pass or a certain number of users to approve before the owner can execute a Cosmos message.
+
+### Recommendation
+
+Restrict Owner Actions: Limit the types of Cosmos messages that the owner can send. This could be done by creating a whitelist of allowed actions, and checking any proposed actions against this list before execution. This would prevent the owner from performing potentially harmful actions like transferring out all of the contract's funds.
+
+```rust
+pub fn owner_action(deps: DepsMut, info: MessageInfo, msg: CosmosMsg) -> Result<Response, ContractError> {
+    assert_owner(deps.storage, info.sender)?;
+    // Add a check to make sure the msg is of a type that we want to allow
+    match &msg {
+        CosmosMsg::Bank(BankMsg::Send { .. }) => {
+            // disallow BankMsg::Send
+            return Err(ContractError::Unauthorized {});
+        }
+        // Add more match arms to disallow other types of messages
+        _ => {}
+    }
+    Ok(Response::new().add_attribute("action", "owner_action").add_message(msg))
+}
+```
+
+Implement Approval Mechanism: Implement a mechanism where a certain number of users, or a certain fraction of users, need to approve an action before it can be executed. This could be done using a multi-signature approach, where several trusted parties need to approve a transaction before it can be executed.
+
+```rust
+pub fn owner_action(deps: DepsMut, info: MessageInfo, msg: CosmosMsg, approvers: Vec<String>) -> Result<Response, ContractError> {
+    assert_owner(deps.storage, info.sender)?;
+    // Check that enough approvers have signed off on this action
+    if approvers.len() < MINIMUM_APPROVALS {
+        return Err(ContractError::Unauthorized {});
+    }
+    Ok(Response::new().add_attribute("action", "owner_action").add_message(msg))
+}
+```
+
+Time Locks: Add a delay between when an action is proposed and when it can be executed. This gives users a chance to review proposed actions and potentially stop them if they are malicious.
+
+```rust
+    pub fn propose_action(deps: DepsMut, info: MessageInfo, msg: CosmosMsg) -> Result<Response, ContractError> {
+    assert_owner(deps.storage, info.sender)?;
+    // Store the proposed action and the time it was proposed
+    PROPOSED_ACTIONS.save(deps.storage, &ProposedAction {
+        msg,
+        time_proposed: env.block.time,
+    })?;
+    Ok(Response::new().add_attribute("action", "propose_action"))
+}
+
+pub fn execute_action(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+assert_owner(deps.storage, info.sender)?;
+// Load the proposed action and check that enough time has passed
+let proposed_action = PROPOSED_ACTIONS.load(deps.storage)?;
+if env.block.time - proposed_action.time_proposed < ACTION_DELAY {
+return Err(ContractError::Unauthorized {});
+}
+// Execute the action
+Ok(Response::new().add_attribute("action", "execute_action").add_message(proposed_action.msg))
+}
+```
+
+### Proof of concept
+
+Here's how the contract owner could potentially drain all the funds:
+
+```rust
+#[test]
+    fn test_owner_drain() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // Initial state
+        let state: State = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::State {})
+            .unwrap();
+
+        assert_eq!(
+            state,
+            State {
+                current_owner: Addr::unchecked(ADMIN),
+                proposed_owner: None,
+            }
+        );
+
+        // Ownership transfer
+        app.execute_contract(
+            Addr::unchecked(ADMIN),
+            contract_addr.clone(),
+            &ExecuteMsg::ProposeNewOwner {
+                new_owner: "new_owner".to_string(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        app.execute_contract(
+            Addr::unchecked("new_owner"),
+            contract_addr.clone(),
+            &ExecuteMsg::AcceptOwnership {},
+            &[],
+        )
+        .unwrap();
+
+        // Final state
+        let state: State = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::State {})
+            .unwrap();
+
+        assert_eq!(
+            state,
+            State {
+                current_owner: Addr::unchecked("new_owner"),
+                proposed_owner: None,
+            }
+        );
+
+        // User 1 deposit
+        app = mint_tokens(app, USER1.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // User 2 deposit
+        app = mint_tokens(app, USER2.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        let withdraw_msg = BankMsg::Send {
+            to_address: ADMIN.to_string(),
+            amount: vec![coin(20_000, DENOM)],
+        };
+
+        app.execute_contract(
+            Addr::unchecked("new_owner"),
+            contract_addr,
+            &ExecuteMsg::OwnerAction {
+                msg: CosmosMsg::Bank(withdraw_msg),
+            },
+            &[],
+        )
+        .unwrap();
+    }
+```
+
+Remember, this is just a demonstration of how the owner of the contract can drain the contract. This action might be considered malicious in a real-world scenario and it's generally not a good practice to have such powerful capabilities in a smart contract.
 
 ---
 
@@ -463,9 +624,7 @@ if balance.balance >= (vtoken_info.total_supply / Uint128::from(3u32)) {
 
 ## Challenge 07: _Tyrfing_
 
-The provided smart contract does not contain a vulnerability that would allow an unprivileged user to drain all the funds in the contract. The contract's functions have appropriate access controls, and the withdrawal function correctly checks the user's balance before allowing a withdrawal.
-
-However, the contract does have a critical flaw in the `OwnerAction` function which allows the contract owner to execute arbitrary Cosmos messages, potentially manipulating the contract's state or performing malicious actions in the context of the contract.
+The contract does have a critical flaw in the `OwnerAction` function which allows the contract owner to execute arbitrary Cosmos messages, potentially manipulating the contract's state or performing malicious actions in the context of the contract.
 
 Here's how the owner can drain all the funds:
 
@@ -578,31 +737,6 @@ fn test_drain() {
 ```
 
 Remember, this is just a demonstration of how the owner of the contract can drain the contract. This action might be considered malicious in a real-world scenario and it's generally not a good practice to have such powerful capabilities in a smart contract.
-
-### Recommendation
-
-To fix this, the contract's balance should be updated before the transfer of funds occurs. Here's how the withdraw function might be updated:
-
-```rust
-pub fn withdraw(deps: DepsMut, info: MessageInfo, amount: Uint128,) -> Result<Response, ContractError> {
-    let mut user_balance = BALANCES.load(deps.storage, &info.sender)?;
-
-    // Subtract amount from user balance before transfer
-    user_balance -= amount;
-    BALANCES.save(deps.storage, &info.sender, &user_balance)?;
-
-    let msg = BankMsg::Send {
-        to_address: info.sender.to_string(),
-        amount: vec![coin(amount.u128(), DENOM)],
-    };
-
-    Ok(Response::new()
-        .add_attribute("action", "withdraw")
-        .add_attribute("user", info.sender)
-        .add_attribute("amount", amount)
-        .add_message(msg))
-}
-```
 
 ---
 

